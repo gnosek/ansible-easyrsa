@@ -164,6 +164,7 @@ def main():
     else:
         module.fail_json(msg='State must be present, absent or revoked')
 
+    module.exit_json(**ret)
 
 # this is magic, see lib/ansible/module_common.py
 #<<INCLUDE_ANSIBLE_MODULE_COMMON>>
