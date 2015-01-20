@@ -90,8 +90,35 @@ def check_status(root, cn):
                 return ret
             raise ValueError('Error verifying certificate: {0}'.format(result))
 
-def cert_create(root, cn):
-    return easyrsa_cmd(root, './pkitool', cn)
+def check_key_usage(root, cn):
+    # easyRSA does not generate server+client certs, so it's either
+    # one, or the other
+
+    keydir = os.path.join(root, 'keys')
+    cert = os.path.join(keydir, cn + '.crt')
+    if not os.path.exists(cert):
+        return None
+
+    result = easyrsa_cmd(root, 'openssl', 'x509', '-in', cert, '-noout', '-text')
+    next_line_is_usage = False
+
+    for line in result.splitlines():
+        line = line.strip()
+        if line == 'X509v3 Extended Key Usage:':
+            next_line_is_usage = True
+        elif next_line_is_usage:
+            if line == 'TLS Web Server Authentication':
+                return 'server'
+            elif line == 'TLS Web Client Authentication':
+                return 'client'
+            else:
+                return 'unknown: ' + line
+
+def cert_create(root, cn, key_usage):
+    if key_usage == 'server':
+        return easyrsa_cmd(root, './pkitool', '--server', cn)
+    else:
+        return easyrsa_cmd(root, './pkitool', cn)
 
 def cert_remove(root, cn):
     keydir = os.path.join(root, 'keys')
@@ -123,6 +150,7 @@ def main():
             cn=dict(required=True),
             state=dict(default='present'),
             check=dict(default='no'),
+            key_usage=dict(default='client', choices=['client', 'server']),
         ),
         supports_check_mode=True
     )
@@ -131,6 +159,7 @@ def main():
     cn = module.params.get('cn')
     state = module.params.get('state')
     check = module.params.get('check') in BOOLEANS_TRUE
+    key_usage = module.params.get('key_usage')
 
     if not check_cn(cn):
         module.fail_json(msg='Invalid common name (ASCII letters, digits and ._- allowed)')
@@ -149,13 +178,18 @@ def main():
         'changed': state != current_state,
     }
 
+    if state in ('present', 'revoked'):
+        ret['key_usage'] = check_key_usage(ca_root, cn)
+        if ret['key_usage'] and not module.check_mode and not check and key_usage != ret['key_usage']:
+            module.fail_json(msg='Cannot change key usage from {0} to {1}'.format(ret['key_usage'], key_usage))
+
     if module.check_mode or check or state == current_state:
         if current_state == 'present':
             ret.update(load_cert(ca_root, cn))
         module.exit_json(**ret)
 
     if state == 'present':
-        ret['output'] = cert_create(ca_root, cn)
+        ret['output'] = cert_create(ca_root, cn, key_usage)
         ret.update(load_cert(ca_root, cn))
     elif state == 'absent':
         ret['output'] = cert_remove(ca_root, cn)
